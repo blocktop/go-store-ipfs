@@ -1,0 +1,34 @@
+{
+  "author": "jason",
+  "bugs": {},
+  "gx": {
+    "dvcsimport": "github.com/blocktop/go-state-ipfs"
+  },
+  "gxDependencies": [
+    {
+      "author": "whyrusleeping",
+      "hash": "QmPrv66vmh2P7vLJMpYx6DWLTNKvVB4Jdkyxs6V3QvWKvf",
+      "name": "go-ipld-cbor",
+      "version": "1.3.0"
+    },
+    {
+      "author": "whyrusleeping",
+      "hash": "QmPSQnBKM9g7BaUcZCvswUJVscQ1ipjmwxN5PXCjkp9EQ7",
+      "name": "go-cid",
+      "version": "0.9.0"
+    },
+    {
+      "author": "whyrusleeping",
+      "hash": "QmPrv66vmh2P7vLJMpYx6DWLTNKvVB4Jdkyxs6V3QvWKvf",
+      "name": "go-ipld-cbor",
+      "version": "1.3.0"
+    }
+  ],
+  "gxVersion": "0.12.1",
+  "language": "go",
+  "license": "",
+  "name": "go-state-ipfs",
+  "releaseCmd": "git commit -a -m \"gx publish $VERSION\"",
+  "version": "0.0.0"
+}
+
