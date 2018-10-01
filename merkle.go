@@ -137,30 +137,37 @@ func (m *merkleTreeStruct) getRoot() string {
 	return m.root.path.Cid().String()
 }
 
-func (m *merkleTreeStruct) GetValue(ctx context.Context, key string) ([]byte, error) {
-	n, err := m.get(ctx, key, "")
+func (m *merkleTreeStruct) getValue(ctx context.Context, key string, inBatch bool) ([]byte, error) {
+	n, err := m.getNode(ctx, key, "", inBatch)
 	if err != nil {
 		return nil, err
+	}
+	if n == nil {
+		return nil, nil
 	}
 	return n.data, nil
 }
 
-func (m *merkleTreeStruct) GetLinks(ctx context.Context, key string) (map[string]*link, error) {
-	n, err := m.get(ctx, key, "")
+func (m *merkleTreeStruct) getLinks(ctx context.Context, key string, inBatch bool) (map[string]*link, error) {
+	n, err := m.getNode(ctx, key, "", inBatch)
 	if err != nil {
 		return nil, err
+	}
+	if n == nil {
+		return nil, nil
 	}
 	return n.links, nil
 }
 
-func (m *merkleTreeStruct) GetLink(ctx context.Context, key string, linkName string) (*node, error) {
-	return m.get(ctx, key, linkName)
+func (m *merkleTreeStruct) getLink(ctx context.Context, key string, linkName string, inBatch bool) (*node, error) {
+	return m.getNode(ctx, key, linkName, inBatch)
 }
 
-func (m *merkleTreeStruct) get(ctx context.Context, key string, linkName string) (*node, error) {
-	if m.locked {
-		return nil, errors.New("the merkle tree is currently locked")
+func (m *merkleTreeStruct) getNode(ctx context.Context, key string, linkName string, inBatch bool) (*node, error) {
+	if inBatch {
+		return m.getNodeFromBatch(ctx, key, linkName)
 	}
+
 	keyPath := m.root.path.String() + "/" + strings.Join(strings.Split(key, ""), "/")
 	if linkName != "" {
 		keyPath += "/" + linkName
@@ -174,17 +181,91 @@ func (m *merkleTreeStruct) get(ctx context.Context, key string, linkName string)
 	return n, nil
 }
 
-func (m *merkleTreeStruct) PutValue(ctx context.Context, key string, value []byte) error {
+func (m *merkleTreeStruct) getNodeFromBatch(ctx context.Context, key string, linkName string) (*node, error) {
+	if !m.locked {
+		return nil, errors.New("the tree is not currently in batch")
+	}
+	root := m.batch.root
+	n, err := m.getKey(ctx, root, key)
+	if err != nil {
+		return nil, err
+	}
+	if n == nil {
+		return nil, nil
+	}
+	if linkName == "" {
+		return n, nil
+	}
+	if n.links == nil || n.links[linkName] == nil {
+		return nil, nil
+	}
+	lnk := n.links[linkName]
+	if lnk.targetNode != nil {
+		return lnk.targetNode, nil
+	}
+	if lnk.targetCid == cid.Undef {
+		return nil, nil
+	}
+	path := coreiface.IpldPath(lnk.targetCid).String()
+	return getObj(ctx, m.api, path)
+}
+
+func (m *merkleTreeStruct) getKey(ctx context.Context, n *node, key string) (*node, error) {
+	if len(key) == 0 {
+		return n, nil
+	}
+	k := key[:1]
+	krest := key[1:]
+	if n.links == nil {
+		n.links = make(map[string]*link)
+	}
+	lnk := n.links[k]
+	if lnk == nil || lnk.targetNode == nil {
+		path := n.path.String() + "/" + k
+		nk, err := getObj(ctx, m.api, path)
+		if err != nil {
+			return nil, err
+		}
+
+		if lnk == nil {
+			lnk = &link{key: k}
+			n.links[k] = lnk
+		}
+		lnk.targetNode = nk
+	}
+
+	return m.getKey(ctx, lnk.targetNode, krest)
+}
+
+func (m *merkleTreeStruct) putValue(ctx context.Context, key string, value []byte) error {
 	return m.put(ctx, key, value, false)
 }
-func (m *merkleTreeStruct) PutLink(ctx context.Context, key string, ln *link) error {
+func (m *merkleTreeStruct) putLink(ctx context.Context, key string, ln *link) error {
 	return m.put(ctx, key, ln, true)
+}
+
+func (m *merkleTreeStruct) putNode(ctx context.Context, key string, n *node) error {
+	err := m.put(ctx, key, n.data, false)
+	if err != nil {
+		return err
+	}
+	if n.links == nil {
+		return nil
+	}
+	for _, lnk := range n.links {
+		err = m.put(ctx, key, lnk, true)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *merkleTreeStruct) put(ctx context.Context, key string, value interface{}, valueIsLink bool) error {
 	if !m.locked {
-		return errors.New("not currently in batch")
+		return errors.New("the tree is not currently in batch")
 	}
+
 	var err error
 	var root *node
 
@@ -327,15 +408,15 @@ func (b *merkleTreeBatch) makeChild(ctx context.Context, key string, value inter
 }
 
 func makeBlockKey(block spec.Block) string {
-	return "blk" + block.GetID()
+	return "blk" + block.Hash()
 }
 
 func makeTransactionKey(txn spec.Transaction) string {
-	return "txn" + txn.GetID()
+	return "txn" + txn.Hash()
 }
 
 func makeTransactionBlockKey(txn spec.Transaction) string {
-	return "txnblk" + txn.GetID()
+	return "txnblk" + txn.Hash()
 }
 
 func makeAccountKey(acct spec.Account) string {
@@ -345,27 +426,3 @@ func makeAccountKey(acct spec.Account) string {
 func makeAccountTransactionKey(acct spec.Account, role string) string {
 	return "acttxn" + role + acct.Address()
 }
-
-/*
-func (m *merkleTreeStruct) putObj(ctx context.Context, obj map[string]interface{}) (coreiface.ResolvedPath, error) {
-	n, err := cbor.WrapObject(obj, mh.SHA2_256, -1)
-	if err != nil {
-		return nil, err
-	}
-	jb, err := n.MarshalJSON()
-	if err != nil {
-		return nil, err
-	}
-	reader := bytes.NewReader(jb)
-	rpath, err := m.api.Dag().Put(ctx, reader)
-	if err != nil {
-		return nil, err
-	}
-
-	if pin {
-		m.api.Pin().Add(ctx, rpath, options.Pin.Recursive(false))
-	}
-
-	return rpath, nil
-}
-*/

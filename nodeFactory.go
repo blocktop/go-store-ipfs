@@ -17,6 +17,7 @@
 package storeipfs
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,33 @@ import (
 	"github.com/gogo/protobuf/proto"
 	coreiface "github.com/ipfs/go-ipfs/core/coreapi/interface"
 )
+
+type node struct {
+	data         []byte
+	links        map[string]*link
+	cnode        *cbor.Node
+	path         coreiface.ResolvedPath
+	changedLinks map[string]bool
+	changedData  bool
+	fromIPFS     bool
+}
+
+type link struct {
+	key        string
+	targetNode *node
+	targetCid  cid.Cid
+}
+
+func makeNodeFromNodeHash(ctx context.Context, hash string) (*node, error) {
+	c, err := cid.Parse(hash)
+	if err != nil {
+		return nil, err
+	}
+	path := coreiface.IpldPath(c)
+
+	// TODO add ctx with timeout
+	return getObj(ctx, Store.api, path.String())
+}
 
 func makeNodeFromObj(data []byte, links map[string]*link) (*node, error) {
 	obj := map[string]interface{}{
@@ -115,14 +143,28 @@ func recomputeNode(n *node) (*node, error) {
 	return n, nil
 }
 
-func makeNodeFromBlock(block spec.Block, txns map[string]*link) (*node, error) {
-	msg := block.Marshal()
-	return makeNodeFromProtoMessage(msg, txns)
+func makeNodeFromBlock(block spec.Block) (*node, error) {
+	data, specLinks, err := block.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	links, err := makeLinks(specLinks)
+	if err != nil {
+		return nil, err
+	}
+	return makeNodeFromObj(data, links)
 }
 
-func makeNodeFromTransaction(txn spec.Transaction, parties map[string]*link) (*node, error) {
-	msg := txn.Marshal()
-	return makeNodeFromProtoMessage(msg, parties)
+func makeNodeFromTransaction(txn spec.Transaction) (*node, error) {
+	data, specLinks, err := txn.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	links, err := makeLinks(specLinks)
+	if err != nil {
+		return nil, err
+	}
+	return makeNodeFromObj(data, links)
 }
 
 func makeNodeFromAccount(acct spec.Account) (*node, error) {
@@ -147,4 +189,38 @@ func makeNodeFromProtoMessage(msg proto.Message, links map[string]*link) (*node,
 	}
 
 	return n, nil
+}
+
+func makeLinks(specLinks spec.Links) (map[string]*link, error) {
+	if specLinks == nil {
+		return nil, nil
+	}
+
+	links := make(map[string]*link, len(specLinks))
+	for name, cidS := range specLinks {
+		c, err := cid.Parse(cidS)
+		if err != nil {
+			return nil, err
+		}
+		links[name] = &link{key: name, targetCid: c}
+	}
+
+	return links, nil
+}
+
+func makeSpecLinks(links map[string]*link) spec.Links {
+	if links == nil {
+		return nil
+	}
+
+	var specLinks spec.Links = make(map[string]string, len(links))
+	for name, lnk := range links {
+		if lnk.targetNode == nil {
+			specLinks[name] = lnk.targetCid.String()
+		} else {
+			specLinks[name] = lnk.targetNode.cnode.String()
+		}
+	}
+
+	return specLinks
 }

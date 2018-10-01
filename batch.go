@@ -27,9 +27,6 @@ import (
 
 type batch struct {
 	dagBatch    coreiface.DagBatch
-	blockHeader *node
-	merkleRoot  *node
-	blockNumber uint64
 	nodes       []*node
 	nodeIndex   map[string]int
 }

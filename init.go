@@ -64,7 +64,7 @@ func InitStore(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	Store.MerkleTree = merkle
+	Store.merkleTree = merkle
 	Store.root.links["merkle"] = &link{key: "merkle", targetNode: merkle.root}
 	Store.root.changedLinks["merkle"] = true
 	root, err = recomputeNode(Store.root)

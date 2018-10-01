@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"strconv"
 
 	cid "gx/ipfs/QmPSQnBKM9g7BaUcZCvswUJVscQ1ipjmwxN5PXCjkp9EQ7/go-cid"
 	cbor "gx/ipfs/QmPrv66vmh2P7vLJMpYx6DWLTNKvVB4Jdkyxs6V3QvWKvf/go-ipld-cbor"
@@ -33,34 +32,18 @@ import (
 )
 
 type store struct {
-	opened     bool
-	Hash       string
+	Root       string
 	root       *node
 	api        coreiface.CoreAPI
 	ipfs       *core.IpfsNode
-	MerkleTree *merkleTreeStruct
-	batch      *batch
+	merkleTree *merkleTreeStruct
+	storeBlock *storeBlock
 	rootFile   string
+	blockRoots map[string]*node // [blockID]rootNode
 }
 
 // ensure that store fulfills the interface specification
-var _ spec.Store = (*store)(nil)
-
-type node struct {
-	data         []byte
-	links        map[string]*link
-	cnode        *cbor.Node
-	path         coreiface.ResolvedPath
-	changedLinks map[string]bool
-	changedData  bool
-	fromIPFS     bool
-}
-
-type link struct {
-	key        string
-	targetNode *node
-	targetCid  cid.Cid
-}
+var _ spec.Store = (*store)(nil) 
 
 type blockHeader struct {
 	blockID       string
@@ -70,31 +53,58 @@ type blockHeader struct {
 
 const dagBatchSize = 700
 
-func (s *store) OpenBlock(blockNumber uint64) error {
-	if ok, _ := s.IsOpen(); ok {
-		return errors.New("store is already open")
+func (s *store) OpenBlock(blockNumber uint64) (spec.StoreBlock, error) {
+	if s.storeBlock != nil {
+		return nil, errors.New("a block is already open")
 	}
 
-	s.opened = true
-
-	merkleRoot, err := s.MerkleTree.StartBatch()
+	sb, err := newstoreBlock(s.root, blockNumber)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	s.storeBlock = sb
 
-	s.batch = &batch{
-		merkleRoot:  merkleRoot,
-		blockNumber: blockNumber}
-
-	return nil
+	return sb, nil
 }
 
-func (s *store) IsOpen() (bool, uint64) {
-	if !s.opened {
-		return false, ^uint64(0)
+func (s *store) GetBlock(ctx context.Context, blockHash string) (spec.StoreBlock, error) {
+	rootNode := s.blockRoots[blockHash]
+	if rootNode == nil {
+		return nil, nil
 	}
-	return true, s.batch.blockNumber
+	bh, err := blockHeaderFromBytes(rootNode.data) 
+	if err != nil {
+		return nil, err
+	}
+	parentLink := rootNode.links["parent"]
+	if parentLink.targetNode == nil {
+		pn, err := getObj(ctx, Store.api, coreiface.IpldPath(parentLink.targetCid).String())
+		if err != nil {
+			return nil, err
+		}
+		parentLink.targetNode = pn
+	}
+	merkleLink := rootNode.links["merkle"]
+	if merkleLink.targetNode == nil {
+		mn, err := getObj(ctx, Store.api, coreiface.IpldPath(merkleLink.targetCid).String())
+		if err != nil {
+			return nil, err
+		}
+		merkleLink.targetNode = mn
+	}
+	sb := &storeBlock{}
+	sb.blockHeader = rootNode
+	sb.blockNumber = bh.blockNumber
+	sb.merkleRoot = merkleLink.targetNode
+	sb.parent = parentLink.targetNode
+	sb.readonly = true
+
+	return sb, nil
 }
+
+func (s *store) StoreBlock() spec.StoreBlock {
+	return s.storeBlock
+} 
 
 func (s *store) Close() {
 	s.ipfs.Close()
@@ -105,161 +115,79 @@ func (s *store) GetRoot() string {
 	return s.root.cnode.String()
 }
 
-func (s *store) SubmitBlock(ctx context.Context, block spec.Block) (string, error) {
-	if ok, _ := s.IsOpen(); !ok {
-		return "", errors.New("store is not currently open")
-	}
-	if block.GetBlockNumber() != s.batch.blockNumber {
-		return "", errors.New("store was open for a different block number")
-	}
-
-	txns := block.GetTransactions()
-	txnodes := make(map[string]*link, len(txns))
-	for i, t := range txns {
-
-		parties := t.Parties()
-		prtynodes := make(map[string]*link, len(parties))
-		for role, acct := range parties {
-			anode, err := makeNodeFromAccount(acct)
-			if err != nil {
-				return "", err
-			}
-			prtynodes[role] = &link{key: role, targetNode: anode}
-			err = s.MerkleTree.PutLink(ctx, makeAccountKey(acct), &link{key: "acct", targetNode: anode})
-			if err != nil {
-				return "", err
-			}
-		}
-
-		tnode, err := makeNodeFromTransaction(t, prtynodes)
-		if err != nil {
-			return "", err
-		}
-		k := strconv.FormatInt(int64(i), 10)
-		txnodes[k] = &link{key: "txn" + k, targetNode: tnode}
-
-		err = s.MerkleTree.PutLink(ctx, makeTransactionKey(t), &link{key: "txn", targetNode: tnode})
-		if err != nil {
-			return "", err
-		}
-		for role, acct := range parties {
-			err = s.MerkleTree.PutLink(ctx, makeAccountTransactionKey(acct, role), &link{key: t.GetID(), targetNode: tnode})
-			if err != nil {
-				return "", err
-			}
-		}
-	}
-
-	bnode, err := makeNodeFromBlock(block, txnodes)
+func (s *store) Hash(data []byte, specLinks spec.Links) (string, error) {
+	links, err := makeLinks(specLinks)
 	if err != nil {
 		return "", err
 	}
-	err = s.MerkleTree.PutLink(ctx, makeBlockKey(block), &link{key: "blk", targetNode: bnode})
+	n, err := makeNodeFromObj(data, links)
 	if err != nil {
 		return "", err
 	}
-	for _, t := range txns {
-		err = s.MerkleTree.PutLink(ctx, makeTransactionBlockKey(t), &link{key: "blk", targetNode: bnode})
-		if err != nil {
-			return "", err
-		}
-	}
-
-	bh := &blockHeader{
-		blockID:       block.GetID(),
-		parentBlockID: block.GetParentID(),
-		blockNumber:   block.GetBlockNumber()}
-
-	data, err := blockHeaderToBytes(bh)
-	if err != nil {
-		return "", err
-	}
-
-	links := map[string]*link{
-		"parent": &link{key: "parent", targetNode: s.root},
-		"block":  &link{key: "block", targetNode: bnode},
-		"merkle": &link{key: "merkle", targetNode: s.batch.merkleRoot}}
-
-	bhnode, err := makeNodeFromObj(data, links)
-	if err != nil {
-		return "", err
-	}
-
-	bhnode.changedData = true
-	bhnode.changedLinks["block"] = true
-	bhnode.changedLinks["merkle"] = true
-
-	s.batch.blockHeader = bhnode
-
-	return bhnode.cnode.String(), nil
+	return n.cnode.String(), nil
 }
 
-func (s *store) Commit(ctx context.Context) error {
-	if ok, _ := s.IsOpen(); !ok {
-		return errors.New("store is not currently open")
-	}
-	if s.batch.blockHeader == nil {
-		return errors.New("no block has been submitted")
-	}
-
-	err := s.batch.commit(ctx, s.api, s.batch.blockHeader)
+func (s *store) Get(ctx context.Context, hash string, obj spec.Marshalled) error {
+	c, err := cid.Parse(hash)
 	if err != nil {
 		return err
 	}
 
-	if pin {
-		err = s.pinNodes(ctx, s.batch.nodes)
-		if err != nil {
-			return err
-		}
-	}
+	path := coreiface.IpldPath(c)
 
-	err = s.MerkleTree.CommitBatch()
-	if err != nil {
-		return err
-	}
-	s.root = s.batch.blockHeader
-	s.Hash = s.batch.blockHeader.cnode.String()
-
-	err = s.writeRootFile(ctx)
+	n, err := getObj(ctx, s.api, path.String())
 	if err != nil {
 		return err
 	}
 
-	s.reset()
+	obj.Unmarshal(n.data, makeSpecLinks(n.links))
+
 	return nil
 }
 
-func (s *store) pinNodes(ctx context.Context, nodes []*node) error {
-	for _, n := range nodes {
-		if n == nil {
-			continue
-		}
-		err := s.api.Pin().Add(ctx, n.path, options.Pin.Recursive(false))
-		if err != nil {
-			return err
-		}
+func (s *store) Put(ctx context.Context, obj spec.Marshalled) error {
+	data, specLinks, err := obj.Marshal()
+	if err != nil {
+		return err
 	}
-	return nil
+	links, err := makeLinks(specLinks)
+	if err != nil {
+		return err
+	}
+	n, err := makeNodeFromObj(data, links)
+	if err != nil {
+		return err
+	}
+	return putObj(ctx, s.api, n)
 }
 
-func (s *store) Revert() error {
-	if ok, _ := s.IsOpen(); !ok {
-		return errors.New("store is not currently open")
-	}
+func (s *store) TreeGet(ctx context.Context, key string, obj spec.Marshalled) error {
+	if s.storeBlock != nil {
 
-	err := s.MerkleTree.RevertBatch()
+	}
+	n, err := s.merkleTree.getNode(ctx, key, "", false) 
 	if err != nil {
 		return err
 	}
 
-	s.reset()
+	obj.Unmarshal(n.data, makeSpecLinks(n.links))
+
 	return nil
 }
 
 func (s *store) reset() {
-	s.batch = nil
-	s.opened = false
+	s.storeBlock = nil
+}
+
+func (s *store) setRoot(ctx context.Context, root *node) error {
+	s.root = root
+	s.Root = root.cnode.String()
+
+	err := s.writeRootFile(ctx)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func getObj(ctx context.Context, api coreiface.CoreAPI, path string) (*node, error) {
