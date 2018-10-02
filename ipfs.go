@@ -14,14 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with blocktop. If not, see <http://www.gnu.org/licenses/>.
 
-package storeipfs 
+package storeipfs
 
 import (
 	"context"
-	"os"
 	"fmt"
+	"os"
 
-	config "gx/ipfs/QmYVqYJTVjetcf1guieEgWpK1PZtHPytP624vKzTF1P3r2/go-ipfs-config"
+	config "gx/ipfs/QmVBUpxsHh53rNcufqxMpLAmz37eGyLJUaexDy1W9YkiNk/go-ipfs-config"
 
 	"github.com/ipfs/go-ipfs/core"
 	fsrepo "github.com/ipfs/go-ipfs/repo/fsrepo"

@@ -23,7 +23,7 @@ import (
 	"errors"
 
 	cid "gx/ipfs/QmPSQnBKM9g7BaUcZCvswUJVscQ1ipjmwxN5PXCjkp9EQ7/go-cid"
-	cbor "gx/ipfs/QmPrv66vmh2P7vLJMpYx6DWLTNKvVB4Jdkyxs6V3QvWKvf/go-ipld-cbor"
+	cbor "gx/ipfs/QmSywXfm2v4Qkp4DcFqo8eehj49dJK3bdUnaLVxrdFLMQn/go-ipld-cbor"
 
 	spec "github.com/blocktop/go-spec"
 	"github.com/ipfs/go-ipfs/core"
