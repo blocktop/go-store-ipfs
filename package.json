@@ -7,9 +7,9 @@
   "gxDependencies": [
     {
       "author": "magik6k",
-      "hash": "QmVBUpxsHh53rNcufqxMpLAmz37eGyLJUaexDy1W9YkiNk",
+      "hash": "QmSoYrBMibm2T3LupaLuez7LPGnyrJwdRxvTfPUyCp691u",
       "name": "go-ipfs-config",
-      "version": "0.2.9"
+      "version": "0.2.13"
     },
     {
       "author": "whyrusleeping",
